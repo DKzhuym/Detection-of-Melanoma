@@ -1,0 +1,216 @@
+import tensorflow as tf
+import pathlib
+import matplotlib.pyplot as plt
+import numpy as np
+import pandas as pd
+import os
+import PIL
+from tensorflow import keras
+from tensorflow.keras import layers
+from tensorflow.keras.models import Sequential
+from sklearn.model_selection import train_test_split
+from sklearn.preprocessing import LabelEncoder
+from collections import Counter
+
+def preprocess_and_load_image(img_path, target):
+    img = process_image(img_path.numpy().decode("utf-8"))
+    return img, target
+
+def create_tf_dataset(paths, targets):
+    AUTOTUNE = tf.data.experimental.AUTOTUNE
+    paths_ds = tf.data.Dataset.from_tensor_slices(paths)
+    img_ds = paths_ds.map(lambda x: tf.py_function(preprocess_and_load_image, [x], [tf.uint8, tf.int32]),
+                          num_parallel_calls=AUTOTUNE)
+    return img_ds
+
+training_data_dir = pathlib.Path(r"C:\Users\zhu\preprocess_image\Train")
+testing_data_dir = pathlib.Path(r"C:\Users\zhu\preprocess_image\Test")
+
+train_img_count = len(list(training_data_dir.glob('*/*.jpg')))
+print(train_img_count)
+test_img_count = len(list(testing_data_dir.glob('*/*.jpg')))
+print(test_img_count)
+
+train_image_paths = [str(p) for p in list(training_data_dir.glob('*/*.jpg'))]
+train_image_labels = [p.parent.name for p in training_data_dir.glob('*/*.jpg')]
+
+train_img_paths_train, train_img_paths_val, train_labels_train, train_labels_val = train_test_split(
+    train_image_paths, train_image_labels, test_size=0.3, random_state=123)
+
+training_dataset = create_tf_dataset(train_img_paths_train, train_labels_train)
+validation_dataset = create_tf_dataset(train_img_paths_val, train_labels_val)
+
+batch_sz = 32
+image_height = 180
+image_width = 180
+
+training_dataset = tf.keras.preprocessing.image_dataset_from_directory(
+    training_data_dir,
+    validation_split=0.3,
+    subset="training",
+    seed=123,
+    image_size=(image_height, image_width),
+    batch_size=batch_sz
+)
+
+validation_dataset = tf.keras.preprocessing.image_dataset_from_directory(
+    training_data_dir,
+    validation_split=0.3,
+    subset="validation",
+    seed=123,
+    image_size=(image_height, image_width),
+    batch_size=batch_sz
+)
+
+category_names = training_dataset.class_names
+print(category_names)
+
+plt.figure(figsize=(12, 10))
+for i in range(len(category_names)):
+    filtered_dataset = training_dataset.filter(lambda x, l: tf.math.equal(l[0], i))
+    for image, label in filtered_dataset.take(1):
+        ax = plt.subplot(3, 3, i + 1)
+        plt.imshow(image[0].numpy().astype('uint8'))
+        plt.title(category_names[label.numpy()[0]])
+        plt.axis('off')
+
+AUTOTUNE = tf.data.experimental.AUTOTUNE
+training_dataset = training_dataset.cache().shuffle(1000).prefetch(buffer_size=AUTOTUNE)
+validation_dataset = validation_dataset.cache().prefetch(buffer_size=AUTOTUNE)
+
+num_categories = len(category_names)
+
+model = Sequential([
+    layers.Rescaling(1./255, input_shape=(image_height, image_width, 3)),
+    layers.Conv2D(16, 3, padding='same', activation='relu'),
+    layers.MaxPooling2D(),
+    layers.Conv2D(32, 3, padding='same', activation='relu'),
+    layers.MaxPooling2D(),
+    layers.Conv2D(64, 3, padding='same', activation='relu'),
+    layers.MaxPooling2D(),
+    layers.Flatten(),
+    layers.Dense(128, activation='relu'),
+    layers.Dense(num_categories)
+])
+
+model.compile(optimizer='adam',
+              loss=tf.keras.losses.SparseCategoricalCrossentropy(from_logits=True),
+              metrics=['accuracy'])
+
+model.summary()
+
+num_epochs = 300
+history = model.fit(
+    training_dataset,
+    validation_data=validation_dataset,
+    epochs=num_epochs
+)
+
+accuracy = history.history['accuracy']
+validation_accuracy = history.history['val_accuracy']
+
+training_loss = history.history['loss']
+validation_loss = history.history['val_loss']
+
+epoch_range = range(num_epochs)
+
+plt.figure(figsize=(8, 8))
+plt.subplot(1, 2, 1)
+plt.plot(epoch_range, accuracy, label='Training Accuracy')
+plt.plot(epoch_range, validation_accuracy, label='Validation Accuracy')
+plt.legend(loc='lower right')
+plt.title('Training and Validation Accuracy')
+
+plt.subplot(1, 2, 2)
+plt.plot(epoch_range, training_loss, label='Training Loss')
+plt.plot(epoch_range, validation_loss, label='Validation Loss')
+plt.legend(loc='upper right')
+plt.title('Training and Validation Loss')
+plt.show()
+
+data_augmenter = keras.Sequential(
+    [
+        layers.RandomFlip("horizontal", input_shape=(image_height, image_width, 3)),
+        layers.RandomRotation(0.1),
+        layers.RandomZoom(0.1),
+    ]
+)
+
+plt.figure(figsize=(10, 10))
+for images, _ in training_dataset.take(1):
+    for i in range(9):
+        augmented_images = data_augmenter(images)
+        ax = plt.subplot(3, 3, i + 1)
+        plt.imshow(augmented_images[0].numpy().astype("uint8"))
+        plt.axis("off")
+
+model = Sequential([
+    data_augmenter,
+    layers.Rescaling(1./255, input_shape=(image_height, image_width, 3)),
+    layers.Conv2D(16, 3, padding='same', activation='relu'),
+    layers.MaxPooling2D(),
+    layers.Conv2D(32, 3, padding='same', activation='relu'),
+    layers.MaxPooling2D(),
+    layers.Conv2D(64, 3, padding='same', activation='relu'),
+    layers.MaxPooling2D(),
+    layers.Dropout(0.2),
+    layers.Flatten(),
+    layers.Dense(128, activation='relu'),
+    layers.Dense(num_categories)
+])
+
+model.compile(optimizer='adam',
+              loss=tf.keras.losses.SparseCategoricalCrossentropy(from_logits=True),
+              metrics=['accuracy'])
+
+history = model.fit(
+    training_dataset,
+    validation_data=validation_dataset,
+    epochs=num_epochs
+)
+
+accuracy = history.history['accuracy']
+validation_accuracy = history.history['val_accuracy']
+
+training_loss = history.history['loss']
+validation_loss = history.history['val_loss']
+
+epoch_range = range(num_epochs)
+
+plt.figure(figsize=(8, 8))
+plt.subplot(1, 2, 1)
+plt.plot(epoch_range, accuracy, label='Training Accuracy')
+plt.plot(epoch_range, validation_accuracy, label='Validation Accuracy')
+plt.legend(loc='lower right')
+plt.title('Training and Validation Accuracy')
+
+plt.subplot(1, 2, 2)
+plt.plot(epoch_range, training_loss, label='Training Loss')
+plt.plot(epoch_range, validation_loss, label='Validation Loss')
+plt.legend(loc='upper right')
+plt.title('Training and Validation Loss')
+plt.show()
+
+img_paths_list = [x for x in glob(os.path.join(training_data_dir, '*', '*.jpg'))]
+img_labels_list = [os.path.basename(os.path.dirname(x)) for x in img_paths_list]
+encoder = LabelEncoder()
+encoded_labels = encoder.fit_transform(img_labels_list)
+counter = Counter(encoded_labels)
+sample_num = max(counter.values())
+
+balanced_img_paths = []
+balanced_img_labels = []
+
+for label, count in counter.items():
+    img_paths = [img_paths_list[i] for i in range(len(img_paths_list)) if encoded_labels[i] == label]
+    img_labels = [img_labels_list[i] for i in range(len(img_labels_list)) if encoded_labels[i] == label]
+    img_paths = img_paths * (sample_num // count) + random.sample(img_paths, sample_num % count)
+    img_labels = img_labels * (sample_num // count) + random.sample(img_labels, sample_num % count)
+    balanced_img_paths.extend(img_paths)
+    balanced_img_labels.extend(img_labels)
+
+train_img_paths_train, train_img_paths_val, train_labels_train, train_labels_val = train_test_split(
+    balanced_img_paths, balanced_img_labels, test_size=0.3, random_state=123)
+
+training_dataset = create_tf_dataset(train_img_paths_train, train_labels_train)
+validation_dataset = create_tf_dataset(train_img_paths_val, train_labels_val)
